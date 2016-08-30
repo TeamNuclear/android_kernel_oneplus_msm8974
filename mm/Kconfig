@@ -246,6 +246,16 @@ config KSM
 	  until a program has madvised that an area is MADV_MERGEABLE, and
 	  root has set /sys/kernel/mm/ksm/run to 1 (if CONFIG_SYSFS is set).
 
+config KSM_CHECK_PAGE
+	bool "Check page before scanning"
+	depends on KSM
+	default n
+	help
+	  If enabled, this will check and skip if page is already scanned in
+	  same KSM scan cycle.
+	  This is useful in situation where you have parent and
+	  child process marking same area for KSM scanning.
+
 config DEFAULT_MMAP_MIN_ADDR
         int "Low address space to protect from user allocation"
 	depends on MMU
@@ -380,6 +390,16 @@ config CLEANCACHE
 
 	  If unsure, say Y to enable cleancache
 
+config DYNAMIC_PAGE_WRITEBACK
+	bool "Dynamically manage the dirty page writebacks during suspend/resume"
+	depends on POWERSUSPEND
+	default y
+	help
+	  This feature allows to use different dirty page writeback intervals
+	  when the system is suspended and when the system has been resumed.
+
+	  If unsure, say N to disable this feature
+
 config MEMORY_HOLE_CARVEOUT
         bool
         help
@@ -401,3 +421,138 @@ config USE_USER_ACCESSIBLE_TIMERS
 	  architecture-specific code that will need to be enabled
 	  separately.
 
+config KSWAPD_CPU_AFFINITY_MASK
+	string "kswapd cpu affinity mask"
+	depends on SMP
+	help
+	  Set the cpu affinity for the kswapd task.
+	  There can be power benefits on certain targets when limiting kswapd
+	  to run only on certain cores.
+	  The cpu affinity bitmask is represented by a hex string where commas
+	  group hex digits into chunks.  Each chunk defines exactly 32 bits of
+	  the resultant bitmask.
+	  For example to limit kswapd to the first 4 cores use the following:
+	  CONFIG_KSWAPD_CPU_AFFINITY_MASK="f"
+
+config ZBUD
+	tristate "Low density storage for compressed pages"
+	default n
+	help
+	  A special purpose allocator for storing compressed pages.
+	  It is designed to store up to two compressed pages per physical
+	  page.  While this design limits storage density, it has simple and
+	  deterministic reclaim properties that make it preferable to a higher
+	  density approach when reclaim will be used.
+
+config ZCACHE
+	   bool "Compressed cache for file pages (EXPERIMENTAL)"
+	   depends on CRYPTO && CLEANCACHE
+	   select CRYPTO_LZO
+	   select ZBUD
+	   default n
+	   help
+		 A compressed cache for file pages.
+		 It takes active file pages that are in the process of being reclaimed
+		 and attempts to compress them into a dynamically allocated RAM-based
+		 memory pool.
+
+		 If this process is successful, when those file pages needed again, the
+		 I/O reading operation was avoided. This results in a significant performance
+		 gains under memory pressure for systems full with file pages.
+
+config BALANCE_ANON_FILE_RECLAIM
+	bool "During reclaim treat anon and file backed pages equally"
+	depends on SWAP
+	help
+	  When performing memory reclaim treat anonymous and file backed pages
+	  equally.
+	  Swapping anonymous pages out to memory can be efficient enough to justify
+	  treating anonymous and file backed pages equally.
+
+config ZSMALLOC
+	tristate "Memory allocator for compressed pages"
+	depends on MMU
+	default n
+	help
+	  zsmalloc is a slab-based memory allocator designed to store
+	  compressed RAM pages.  zsmalloc uses virtual memory mapping
+	  in order to reduce fragmentation.  However, this results in a
+	  non-standard allocator interface where a handle, not a pointer, is
+	  returned by an alloc().  This handle must be mapped in order to
+	  access the allocated space.
+
+config PGTABLE_MAPPING
+	bool "Use page table mapping to access object in zsmalloc"
+	depends on ZSMALLOC
+	help
+	  By default, zsmalloc uses a copy-based object mapping method to
+	  access allocations that span two pages. However, if a particular
+	  architecture (ex, ARM) performs VM mapping faster than copying,
+	  then you should select this. This causes zsmalloc to use page table
+	  mapping rather than copying for object mapping.
+
+	  You can check speed with zsmalloc benchmark[1].
+	  [1] https://github.com/spartacus06/zsmalloc
+
+config PROCESS_RECLAIM
+	bool "Enable process reclaim"
+	depends on PROC_FS
+	default n
+	help
+	 It allows to reclaim pages of the process by /proc/pid/reclaim.
+
+	 (echo file > /proc/PID/reclaim) reclaims file-backed pages only.
+	 (echo anon > /proc/PID/reclaim) reclaims anonymous pages only.
+	 (echo all > /proc/PID/reclaim) reclaims all pages.
+
+	 (echo addr size-byte > /proc/PID/reclaim) reclaims pages in
+	 (addr, addr + size-bytes) of the process.
+
+	 Any other vaule is ignored.
+
+config ZBUD
+	tristate "Low density storage for compressed pages"
+	default n
+	help
+	  A special purpose allocator for storing compressed pages.
+	  It is designed to store up to two compressed pages per physical
+	  page.  While this design limits storage density, it has simple and
+	  deterministic reclaim properties that make it preferable to a higher
+	  density approach when reclaim will be used.
+
+config ZCACHE
+	   bool "Compressed cache for file pages (EXPERIMENTAL)"
+	   depends on CRYPTO && CLEANCACHE
+	   select CRYPTO_LZO
+	   select ZBUD
+	   default n
+	   help
+		 A compressed cache for file pages.
+		 It takes active file pages that are in the process of being reclaimed
+		 and attempts to compress them into a dynamically allocated RAM-based
+		 memory pool.
+
+		 If this process is successful, when those file pages needed again, the
+		 I/O reading operation was avoided. This results in a significant performance
+		 gains under memory pressure for systems full with file pages.
+
+config BALANCE_ANON_FILE_RECLAIM
+	bool "During reclaim treat anon and file backed pages equally"
+	depends on SWAP
+	help
+	  When performing memory reclaim treat anonymous and file backed pages
+	  equally.
+	  Swapping anonymous pages out to memory can be efficient enough to justify
+	  treating anonymous and file backed pages equally.
+
+config ZSMALLOC
+	tristate "Memory allocator for compressed pages"
+	depends on MMU
+	default n
+	help
+	  zsmalloc is a slab-based memory allocator designed to store
+	  compressed RAM pages.  zsmalloc uses virtual memory mapping
+	  in order to reduce fragmentation.  However, this results in a
+	  non-standard allocator interface where a handle, not a pointer, is
+	  returned by an alloc().  This handle must be mapped in order to
+	  access the allocated space.

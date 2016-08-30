@@ -76,8 +76,9 @@ enum {
 	/* migration should happen before other stuff but after perf */
 	CPU_PRI_PERF		= 20,
 	CPU_PRI_MIGRATION	= 10,
-	/* prepare workqueues for other notifiers */
-	CPU_PRI_WORKQUEUE	= 5,
+	/* bring up workqueues before normal notifiers and down after */
+	CPU_PRI_WORKQUEUE_UP	= 5,
+	CPU_PRI_WORKQUEUE_DOWN	= -5,
 };
 
 #define CPU_ONLINE		0x0002 /* CPU (unsigned)v is up */
@@ -121,24 +122,44 @@ enum {
 		{ .notifier_call = fn, .priority = pri };	\
 	register_cpu_notifier(&fn##_nb);			\
 }
+
+#define __cpu_notifier(fn, pri) {				\
+	static struct notifier_block fn##_nb __cpuinitdata =	\
+		{ .notifier_call = fn, .priority = pri };	\
+	__register_cpu_notifier(&fn##_nb);			\
+}
 #else /* #if defined(CONFIG_HOTPLUG_CPU) || !defined(MODULE) */
 #define cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
+#define __cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
 #endif /* #else #if defined(CONFIG_HOTPLUG_CPU) || !defined(MODULE) */
+
 #ifdef CONFIG_HOTPLUG_CPU
 extern int register_cpu_notifier(struct notifier_block *nb);
+extern int __register_cpu_notifier(struct notifier_block *nb);
 extern void unregister_cpu_notifier(struct notifier_block *nb);
+extern void __unregister_cpu_notifier(struct notifier_block *nb);
 #else
 
 #ifndef MODULE
 extern int register_cpu_notifier(struct notifier_block *nb);
+extern int __register_cpu_notifier(struct notifier_block *nb);
 #else
 static inline int register_cpu_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+
+static inline int __register_cpu_notifier(struct notifier_block *nb)
 {
 	return 0;
 }
 #endif
 
 static inline void unregister_cpu_notifier(struct notifier_block *nb)
+{
+}
+
+static inline void __unregister_cpu_notifier(struct notifier_block *nb)
 {
 }
 #endif
@@ -148,11 +169,20 @@ void notify_cpu_starting(unsigned int cpu);
 extern void cpu_maps_update_begin(void);
 extern void cpu_maps_update_done(void);
 
+#define cpu_notifier_register_begin	cpu_maps_update_begin
+#define cpu_notifier_register_done	cpu_maps_update_done
+
 #else	/* CONFIG_SMP */
 
 #define cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
+#define __cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
 
 static inline int register_cpu_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+
+static inline int __register_cpu_notifier(struct notifier_block *nb)
 {
 	return 0;
 }
@@ -161,11 +191,23 @@ static inline void unregister_cpu_notifier(struct notifier_block *nb)
 {
 }
 
+static inline void __unregister_cpu_notifier(struct notifier_block *nb)
+{
+}
+
 static inline void cpu_maps_update_begin(void)
 {
 }
 
 static inline void cpu_maps_update_done(void)
+{
+}
+
+static inline void cpu_notifier_register_begin(void)
+{
+}
+
+static inline void cpu_notifier_register_done(void)
 {
 }
 
@@ -180,8 +222,11 @@ extern void put_online_cpus(void);
 extern void cpu_hotplug_disable(void);
 extern void cpu_hotplug_enable(void);
 #define hotcpu_notifier(fn, pri)	cpu_notifier(fn, pri)
+#define __hotcpu_notifier(fn, pri)	__cpu_notifier(fn, pri)
 #define register_hotcpu_notifier(nb)	register_cpu_notifier(nb)
+#define __register_hotcpu_notifier(nb)	__register_cpu_notifier(nb)
 #define unregister_hotcpu_notifier(nb)	unregister_cpu_notifier(nb)
+#define __unregister_hotcpu_notifier(nb)	__unregister_cpu_notifier(nb)
 int cpu_down(unsigned int cpu);
 
 #ifdef CONFIG_ARCH_CPU_PROBE_RELEASE
@@ -204,9 +249,12 @@ static inline void cpu_hotplug_driver_unlock(void)
 #define cpu_hotplug_disable()	do { } while (0)
 #define cpu_hotplug_enable()	do { } while (0)
 #define hotcpu_notifier(fn, pri)	do { (void)(fn); } while (0)
+#define __hotcpu_notifier(fn, pri)	do { (void)(fn); } while (0)
 /* These aren't inline functions due to a GCC bug. */
 #define register_hotcpu_notifier(nb)	({ (void)(nb); 0; })
+#define __register_hotcpu_notifier(nb)	({ (void)(nb); 0; })
 #define unregister_hotcpu_notifier(nb)	({ (void)(nb); })
+#define __unregister_hotcpu_notifier(nb)	({ (void)(nb); })
 #endif		/* CONFIG_HOTPLUG_CPU */
 
 #ifdef CONFIG_PM_SLEEP_SMP
@@ -223,5 +271,8 @@ static inline void enable_nonboot_cpus(void) {}
 void idle_notifier_register(struct notifier_block *n);
 void idle_notifier_unregister(struct notifier_block *n);
 void idle_notifier_call_chain(unsigned long val);
+
+extern bool check_cpuboost(int cpu);
+extern bool wakeup_boost;
 
 #endif /* _LINUX_CPU_H_ */

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  * Author: Brian Swetland <swetland@google.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -380,6 +380,7 @@ static void q6asm_session_free(struct audio_client *ac)
 {
 	struct list_head		*ptr, *next;
 	struct asm_no_wait_node		*node;
+	unsigned long			flags;
 
 	pr_debug("%s: sessionid[%d]\n", __func__, ac->session);
 	rtac_remove_popp_from_adm_devices(ac->session);
@@ -388,12 +389,13 @@ static void q6asm_session_free(struct audio_client *ac)
 	ac->perf_mode = LEGACY_PCM_MODE;
 	ac->fptr_cache_ops = NULL;
 
+	spin_lock_irqsave(&ac->no_wait_que_spinlock, flags);
 	list_for_each_safe(ptr, next, &ac->no_wait_que) {
 		node = list_entry(ptr, struct asm_no_wait_node, list);
 		list_del(&node->list);
 		kfree(node);
 	}
-	list_del(&ac->no_wait_que);
+	spin_unlock_irqrestore(&ac->no_wait_que_spinlock, flags);
 	return;
 }
 
@@ -928,6 +930,7 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	ac->fptr_cache_ops = NULL;
 	/* DSP expects stream id from 1 */
 	ac->stream_id = 1;
+	INIT_LIST_HEAD(&ac->no_wait_que);
 	ac->apr = apr_register("ADSP", "ASM", \
 				(apr_fn)q6asm_callback,\
 				((ac->session) << 8 | 0x0001),\
@@ -974,7 +977,6 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	atomic_set(&ac->cmd_state, 0);
 	atomic_set(&ac->nowait_cmd_cnt, 0);
 	spin_lock_init(&ac->no_wait_que_spinlock);
-	INIT_LIST_HEAD(&ac->no_wait_que);
 	atomic_set(&ac->mem_state, 0);
 
 	send_asm_custom_topology(ac);
@@ -1040,6 +1042,11 @@ int q6asm_audio_client_buf_alloc(unsigned int dir,
 			return 0;
 		}
 		mutex_lock(&ac->cmd_lock);
+		if (bufcnt > (LONG_MAX/sizeof(struct audio_buffer))) {
+			pr_err("%s: Buffer size overflows", __func__);
+			mutex_unlock(&ac->cmd_lock);
+			goto fail;
+		}
 		buf = kzalloc(((sizeof(struct audio_buffer))*bufcnt),
 				GFP_KERNEL);
 
@@ -1826,7 +1833,7 @@ static void q6asm_add_hdr_custom_topology(struct audio_client *ac,
 	hdr->src_port = ((ac->session << 8) & 0xFF00) | 0x01;
 	hdr->dest_port = 0;
 	if (cmd_flg) {
-		hdr->token = ((ac->session << 8) | 0x0001);
+		hdr->token = ((ac->session << 8) | 0x0001) ;
 	}
 	hdr->pkt_size  = pkt_size;
 	mutex_unlock(&ac->cmd_lock);
@@ -2653,7 +2660,6 @@ int q6asm_cfg_aac_sel_mix_coef(struct audio_client *ac, uint32_t mix_coeff)
 		pr_err("%s:Command opcode[0x%x]paramid[0x%x] failed\n",
 			__func__, ASM_STREAM_CMD_SET_ENCDEC_PARAM,
 			ASM_PARAM_ID_AAC_STEREO_MIX_COEFF_SELECTION_FLAG_V2);
-		rc = -EINVAL;
 		goto fail_cmd;
 	}
 	rc = wait_event_timeout(ac->cmd_wait,
@@ -2661,11 +2667,12 @@ int q6asm_cfg_aac_sel_mix_coef(struct audio_client *ac, uint32_t mix_coeff)
 	if (!rc) {
 		pr_err("%s:timeout opcode[0x%x]\n",
 			__func__, aac_mix_coeff.hdr.opcode);
+		rc = -ETIMEDOUT;
 		goto fail_cmd;
 	}
 	return 0;
 fail_cmd:
-	return -EINVAL;
+	return rc;
 }
 
 int q6asm_enc_cfg_blk_qcelp(struct audio_client *ac, uint32_t frames_per_buf,

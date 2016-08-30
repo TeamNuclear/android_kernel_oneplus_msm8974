@@ -274,7 +274,6 @@ struct synaptics_rmi4_data {
 	unsigned short f54_ctrl_base_addr;
 	unsigned short f54_data_base_addr;
 	unsigned char gesturemode;
-	bool pwrrunning;
 	unsigned int old_status;
 	unsigned int reset_count; //for reset count
 	unsigned short points[2*7];
@@ -285,6 +284,7 @@ struct synaptics_rmi4_data {
 	atomic_t camera_enable;
 	atomic_t music_enable;
 	atomic_t flashlight_enable;
+	atomic_t sweep_wake_enable;
 	unsigned char glove_enable;  //glove mode
 	unsigned char pdoze_enable;  //pdoze mode
 	unsigned char smartcover_enable;  //smartcover mode
@@ -293,6 +293,9 @@ struct synaptics_rmi4_data {
 	unsigned char bcontinue;
 	struct workqueue_struct *reportqueue;  //for work queue
 	struct work_struct reportwork;
+
+	bool suspended;
+	struct work_struct init_work;
 };
 
 enum exp_fn {

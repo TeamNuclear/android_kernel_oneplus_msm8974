@@ -47,6 +47,9 @@
 #include "epautoconf.c"
 #include "composite.c"
 
+#ifdef CONFIG_SND_RAWMIDI
+#include "f_midi.c"
+#endif
 #include "f_diag.c"
 #include "f_qdss.c"
 #include "f_rmnet_smd.c"
@@ -58,7 +61,6 @@
 #include "f_audio_source.c"
 #endif
 #include "f_fs.c"
-#include "f_midi.c"
 #include "f_mass_storage.c"
 #include "u_serial.c"
 #include "u_sdio.c"
@@ -94,7 +96,6 @@
 #include "f_uac1.c"
 #endif
 #include "f_ncm.c"
-#include "f_charger.c"
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -108,11 +109,10 @@ static const char longname[] = "Gadget Android";
 #define PRODUCT_ID		0x0001
 
 #define ANDROID_DEVICE_NODE_NAME_LENGTH 11
-
 /* f_midi configuration */
 #define MIDI_INPUT_PORTS    1
 #define MIDI_OUTPUT_PORTS   1
-#define MIDI_BUFFER_SIZE    256
+#define MIDI_BUFFER_SIZE    1024
 #define MIDI_QUEUE_LENGTH   32
 
 struct android_usb_function {
@@ -447,6 +447,7 @@ struct functionfs_config {
 	bool opened;
 	bool enabled;
 	struct ffs_data *data;
+	struct android_dev *dev;
 };
 
 static int ffs_function_init(struct android_usb_function *f,
@@ -521,6 +522,7 @@ ffs_aliases_store(struct device *pdev, struct device_attribute *attr,
 
 	dev = list_first_entry(&android_dev_list, struct android_dev,
 			list_item);
+
 	mutex_lock(&dev->mutex);
 
 	if (dev->enabled) {
@@ -559,21 +561,32 @@ static int functionfs_ready_callback(struct ffs_data *ffs)
 	struct functionfs_config *config = ffs_function.config;
 	int ret = 0;
 
-	mutex_lock(&dev->mutex);
-
-	ret = functionfs_bind(ffs, dev->cdev);
-	if (ret)
-		goto err;
+	/* dev is null in case ADB is not in the composition */
+	if (dev) {
+		mutex_lock(&dev->mutex);
+		ret = functionfs_bind(ffs, dev->cdev);
+		if (ret) {
+			mutex_unlock(&dev->mutex);
+			return ret;
+		}
+	} else {
+		/* android ffs_func requires daemon to start only after enable*/
+		pr_debug("start adbd only in ADB composition\n");
+		return -ENODEV;
+	}
 
 	config->data = ffs;
 	config->opened = true;
+	/* Save dev in case the adb function will get disabled */
+	config->dev = dev;
 
 	if (config->enabled)
 		android_enable(dev);
 
-err:
 	mutex_unlock(&dev->mutex);
-	return ret;
+
+	return 0;
+
 }
 
 static void functionfs_closed_callback(struct ffs_data *ffs)
@@ -581,17 +594,32 @@ static void functionfs_closed_callback(struct ffs_data *ffs)
 	struct android_dev *dev = ffs_function.android_dev;
 	struct functionfs_config *config = ffs_function.config;
 
-	mutex_lock(&dev->mutex);
+	/*
+	 * In case new composition is without ADB or ADB got disabled by the
+	 * time ffs_daemon was stopped then use saved one
+	 */
+	if (!dev)
+		dev = config->dev;
 
-	if (config->enabled)
+	/* fatal-error: It should never happen */
+	if (!dev)
+		pr_err("adb_closed_callback: config->dev is NULL");
+
+	if (dev)
+		mutex_lock(&dev->mutex);
+
+	if (config->enabled && dev)
 		android_disable(dev);
+
+	config->dev = NULL;
 
 	config->opened = false;
 	config->data = NULL;
 
 	functionfs_unbind(ffs);
 
-	mutex_unlock(&dev->mutex);
+	if (dev)
+		mutex_unlock(&dev->mutex);
 }
 
 static int functionfs_check_dev_callback(const char *dev_name)
@@ -1526,19 +1554,6 @@ static struct android_usb_function ccid_function = {
 	.bind_config	= ccid_function_bind_config,
 };
 
-/* Charger */
-static int charger_function_bind_config(struct android_usb_function *f,
-						struct usb_configuration *c)
-{
-	return charger_bind_config(c);
-}
-
-static struct android_usb_function charger_function = {
-	.name		= "charging",
-	.bind_config	= charger_function_bind_config,
-};
-
-
 static int
 mtp_function_init(struct android_usb_function *f,
 		struct usb_composite_dev *cdev)
@@ -2019,6 +2034,10 @@ error:
 
 static void mass_storage_function_cleanup(struct android_usb_function *f)
 {
+	struct mass_storage_function_config *config;
+
+	config = f->config;
+	fsg_common_put(config->common);
 	kfree(f->config);
 	f->config = NULL;
 }
@@ -2144,7 +2163,8 @@ static ssize_t audio_source_pcm_show(struct device *dev,
 	struct audio_source_config *config = f->config;
 
 	/* print PCM card and device numbers */
-	return sprintf(buf, "%d %d\n", config->card, config->device);
+	return snprintf(buf, PAGE_SIZE,
+			"%d %d\n", config->card, config->device);
 }
 
 static DEVICE_ATTR(pcm, S_IRUGO | S_IWUSR, audio_source_pcm_show, NULL);
@@ -2210,6 +2230,7 @@ static struct android_usb_function uasp_function = {
 	.bind_config	= uasp_function_bind_config,
 };
 
+#ifdef CONFIG_SND_RAWMIDI
 static int midi_function_init(struct android_usb_function *f,
 					struct usb_composite_dev *cdev)
 {
@@ -2263,7 +2284,7 @@ static struct android_usb_function midi_function = {
 	.bind_config	= midi_function_bind_config,
 	.attributes	= midi_function_attributes,
 };
-
+#endif
 static struct android_usb_function *supported_functions[] = {
 	&ffs_function,
 	&mbim_function,
@@ -2293,9 +2314,10 @@ static struct android_usb_function *supported_functions[] = {
 #ifdef CONFIG_SND_PCM
 	&audio_source_function,
 #endif
-	&midi_function,
 	&uasp_function,
-	&charger_function,
+#ifdef CONFIG_SND_RAWMIDI
+	&midi_function,
+#endif
 	NULL
 };
 
@@ -2572,7 +2594,7 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 	struct android_configuration *conf;
 	char *conf_str;
 	struct android_usb_function_holder *f_holder;
-	char *name;
+	char *name = NULL;
 	char buf[256], *b;
 	char aliases[256], *a;
 	int err;
@@ -2617,8 +2639,10 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 			conf = alloc_android_config(dev);
 
 		curr_conf = curr_conf->next;
+
 		while (conf_str) {
 			name = strsep(&conf_str, ",");
+
 			is_ffs = 0;
 			strlcpy(aliases, dev->ffs_aliases, sizeof(aliases));
 			a = aliases;
@@ -2645,7 +2669,7 @@ functions_store(struct device *pdev, struct device_attribute *attr,
 			err = android_enable_function(dev, conf, name);
 			if (err)
 				pr_err("android_usb: Cannot enable '%s' (%d)",
-								   name, err);
+						name, err);
 		}
 	}
 

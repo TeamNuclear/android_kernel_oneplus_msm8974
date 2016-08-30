@@ -226,10 +226,6 @@ static inline void mlock_migrate_page(struct page *newpage, struct page *page)
 	}
 }
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-extern unsigned long vma_address(struct page *page,
-				 struct vm_area_struct *vma);
-#endif
 #else /* !CONFIG_MMU */
 static inline int is_mlocked_vma(struct vm_area_struct *v, struct page *p)
 {
@@ -280,6 +276,9 @@ static inline struct page *mem_map_next(struct page *iter,
 #else
 #define __paginginit __init
 #endif
+
+/* Returns true if the gfp_mask allows use of ALLOC_NO_WATERMARK */
+bool gfp_pfmemalloc_allowed(gfp_t gfp_mask);
 
 /* Memory initialisation debug and verification */
 enum mminit_level {
@@ -368,5 +367,4 @@ extern u32 hwpoison_filter_enable;
 
 unsigned long reclaim_clean_pages_from_list(struct zone *zone,
 					    struct list_head *page_list);
-
 extern void set_pageblock_order(void);

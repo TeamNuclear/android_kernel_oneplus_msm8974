@@ -1265,6 +1265,35 @@ limPostMsgApi(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
 
 } /*** end limPostMsgApi() ***/
 
+/**
+ * limPostMsgApiHighPri()
+ *
+ * FUNCTION:
+ * This function is called from other thread while posting a
+ * message to LIM message Queue gSirLimMsgQ.
+ *
+ * LOGIC:
+ * NA
+ *
+ * ASSUMPTIONS:
+ * NA
+ *
+ * NOTE:
+ * NA
+ *
+ * @param  pMac - Pointer to Global MAC structure
+ * @param  pMsg - Pointer to the message structure
+ * @return None
+ */
+
+tANI_U32
+limPostMsgApiHighPri(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
+{
+    return  vos_mq_post_message_high_pri(VOS_MQ_ID_PE, (vos_msg_t *) pMsg);
+
+
+} /*** end limPostMsgApi() ***/
+
 
 /*--------------------------------------------------------------------------
 
@@ -2141,6 +2170,12 @@ void limHandleMissedBeaconInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg)
          return;
     }
 #endif
+    if (pMac->pmm.inMissedBeaconScenario == TRUE) {
+         limLog(pMac, LOGW,
+               FL("beacon miss handling is already going on for BSSIdx:%d"),
+               pSirMissedBeaconInd->bssIdx);
+         return;
+    }
     if ( (pMac->pmm.gPmmState == ePMM_STATE_BMPS_SLEEP) ||
          (pMac->pmm.gPmmState == ePMM_STATE_UAPSD_SLEEP)||
          (pMac->pmm.gPmmState == ePMM_STATE_WOWLAN) )

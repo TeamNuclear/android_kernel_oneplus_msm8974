@@ -24,6 +24,7 @@
 #include <linux/tick.h>
 #include <linux/suspend.h>
 #include <linux/pm_qos.h>
+#include <linux/quickwakeup.h>
 #include <linux/of_platform.h>
 #include <mach/mpm.h>
 #include <mach/cpuidle.h>
@@ -99,7 +100,7 @@ static struct notifier_block __refdata lpm_cpu_nblk = {
 };
 
 static uint32_t allowed_l2_mode;
-static uint32_t sysfs_dbg_l2_mode = MSM_SPM_L2_MODE_POWER_COLLAPSE;
+static uint32_t sysfs_dbg_l2_mode __refdata = MSM_SPM_L2_MODE_POWER_COLLAPSE;
 static uint32_t default_l2_mode;
 
 
@@ -563,11 +564,6 @@ static noinline int lpm_cpu_power_select(struct cpuidle_device *dev, int *index)
 			if (!dev->cpu && msm_rpm_waiting_for_ack())
 					break;
 
-		if ((MSM_PM_SLEEP_MODE_POWER_COLLAPSE == mode)
-				&& (num_online_cpus() > 1)
-				&& !sys_state.allow_synched_levels)
-			continue;
-
 		if ((next_wakeup_us >> 10) > pwr->time_overhead_us) {
 			power = pwr->ss_power;
 		} else {
@@ -834,6 +830,7 @@ static const struct platform_suspend_ops lpm_suspend_ops = {
 	.valid = suspend_valid_only_mem,
 	.prepare_late = lpm_suspend_prepare,
 	.wake = lpm_suspend_wake,
+	.suspend_again = quickwakeup_suspend_again,
 };
 
 static void setup_broadcast_timer(void *arg)

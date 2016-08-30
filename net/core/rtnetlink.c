@@ -1070,7 +1070,6 @@ static int rtnl_dump_ifinfo(struct sk_buff *skb, struct netlink_callback *cb)
 	s_h = cb->args[0];
 	s_idx = cb->args[1];
 
-	rcu_read_lock();
 	cb->seq = net->dev_base_seq;
 
 	if (nlmsg_parse(cb->nlh, sizeof(struct ifinfomsg), tb, IFLA_MAX,
@@ -1083,7 +1082,7 @@ static int rtnl_dump_ifinfo(struct sk_buff *skb, struct netlink_callback *cb)
 	for (h = s_h; h < NETDEV_HASHENTRIES; h++, s_idx = 0) {
 		idx = 0;
 		head = &net->dev_index_head[h];
-		hlist_for_each_entry_rcu(dev, node, head, index_hlist) {
+		hlist_for_each_entry(dev, node, head, index_hlist) {
 			if (idx < s_idx)
 				goto cont;
 			err = rtnl_fill_ifinfo(skb, dev, RTM_NEWLINK,
@@ -1105,7 +1104,6 @@ cont:
 		}
 	}
 out:
-	rcu_read_unlock();
 	cb->args[1] = idx;
 	cb->args[0] = h;
 
@@ -1139,10 +1137,6 @@ EXPORT_SYMBOL(ifla_policy);
 static const struct nla_policy ifla_info_policy[IFLA_INFO_MAX+1] = {
 	[IFLA_INFO_KIND]	= { .type = NLA_STRING },
 	[IFLA_INFO_DATA]	= { .type = NLA_NESTED },
-};
-
-static const struct nla_policy ifla_vfinfo_policy[IFLA_VF_INFO_MAX+1] = {
-	[IFLA_VF_INFO]		= { .type = NLA_NESTED },
 };
 
 static const struct nla_policy ifla_vf_policy[IFLA_VF_MAX+1] = {
@@ -1218,58 +1212,53 @@ static int validate_linkmsg(struct net_device *dev, struct nlattr *tb[])
 	return 0;
 }
 
-static int do_setvfinfo(struct net_device *dev, struct nlattr *attr)
+static int do_setvfinfo(struct net_device *dev, struct nlattr **tb)
 {
-	int rem, err = -EINVAL;
-	struct nlattr *vf;
 	const struct net_device_ops *ops = dev->netdev_ops;
+	int err = -EINVAL;
 
-	nla_for_each_nested(vf, attr, rem) {
-		switch (nla_type(vf)) {
-		case IFLA_VF_MAC: {
-			struct ifla_vf_mac *ivm;
-			ivm = nla_data(vf);
-			err = -EOPNOTSUPP;
-			if (ops->ndo_set_vf_mac)
-				err = ops->ndo_set_vf_mac(dev, ivm->vf,
-							  ivm->mac);
-			break;
-		}
-		case IFLA_VF_VLAN: {
-			struct ifla_vf_vlan *ivv;
-			ivv = nla_data(vf);
-			err = -EOPNOTSUPP;
-			if (ops->ndo_set_vf_vlan)
-				err = ops->ndo_set_vf_vlan(dev, ivv->vf,
-							   ivv->vlan,
-							   ivv->qos);
-			break;
-		}
-		case IFLA_VF_TX_RATE: {
-			struct ifla_vf_tx_rate *ivt;
-			ivt = nla_data(vf);
-			err = -EOPNOTSUPP;
-			if (ops->ndo_set_vf_tx_rate)
-				err = ops->ndo_set_vf_tx_rate(dev, ivt->vf,
-							      ivt->rate);
-			break;
-		}
-		case IFLA_VF_SPOOFCHK: {
-			struct ifla_vf_spoofchk *ivs;
-			ivs = nla_data(vf);
-			err = -EOPNOTSUPP;
-			if (ops->ndo_set_vf_spoofchk)
-				err = ops->ndo_set_vf_spoofchk(dev, ivs->vf,
-							       ivs->setting);
-			break;
-		}
-		default:
-			err = -EINVAL;
-			break;
-		}
-		if (err)
-			break;
+	if (tb[IFLA_VF_MAC]) {
+		struct ifla_vf_mac *ivm = nla_data(tb[IFLA_VF_MAC]);
+		err = -EOPNOTSUPP;
+		if (ops->ndo_set_vf_mac)
+			err = ops->ndo_set_vf_mac(dev, ivm->vf,
+						  ivm->mac);
+		if (err < 0)
+			return err;
 	}
+
+	if (tb[IFLA_VF_VLAN]) {
+		struct ifla_vf_vlan *ivv = nla_data(tb[IFLA_VF_VLAN]);
+
+		err = -EOPNOTSUPP;
+		if (ops->ndo_set_vf_vlan)
+			err = ops->ndo_set_vf_vlan(dev, ivv->vf, ivv->vlan,
+						   ivv->qos);
+		if (err < 0)
+			return err;
+	}
+
+	if (tb[IFLA_VF_TX_RATE]) {
+		struct ifla_vf_tx_rate *ivt = nla_data(tb[IFLA_VF_TX_RATE]);
+
+		if (ops->ndo_set_vf_tx_rate)
+			err = ops->ndo_set_vf_tx_rate(dev, ivt->vf,
+						      ivt->rate);
+		if (err < 0)
+			return err;
+	}
+
+	if (tb[IFLA_VF_SPOOFCHK]) {
+		struct ifla_vf_spoofchk *ivs = nla_data(tb[IFLA_VF_SPOOFCHK]);
+
+		err = -EOPNOTSUPP;
+		if (ops->ndo_set_vf_spoofchk)
+			err = ops->ndo_set_vf_spoofchk(dev, ivs->vf,
+						       ivs->setting);
+		if (err < 0)
+			return err;
+	}
+
 	return err;
 }
 
@@ -1452,14 +1441,21 @@ static int do_setlink(struct net_device *dev, struct ifinfomsg *ifm,
 	}
 
 	if (tb[IFLA_VFINFO_LIST]) {
+		struct nlattr *vfinfo[IFLA_VF_MAX + 1];
 		struct nlattr *attr;
 		int rem;
+
 		nla_for_each_nested(attr, tb[IFLA_VFINFO_LIST], rem) {
-			if (nla_type(attr) != IFLA_VF_INFO) {
+			if (nla_type(attr) != IFLA_VF_INFO ||
+			    nla_len(attr) < NLA_HDRLEN) {
 				err = -EINVAL;
 				goto errout;
 			}
-			err = do_setvfinfo(dev, attr);
+			err = nla_parse_nested(vfinfo, IFLA_VF_MAX, attr,
+					       ifla_vf_policy);
+			if (err < 0)
+				goto errout;
+			err = do_setvfinfo(dev, vfinfo);
 			if (err < 0)
 				goto errout;
 			modified = 1;

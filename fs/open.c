@@ -61,22 +61,33 @@ int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
 	return ret;
 }
 
-long vfs_truncate(struct path *path, loff_t length)
+static long do_sys_truncate(const char __user *pathname, loff_t length)
 {
+	struct path path;
 	struct inode *inode;
-	long error;
+	int error;
 
-	inode = path->dentry->d_inode;
+	error = -EINVAL;
+	if (length < 0)	/* sorry, but loff_t says... */
+		goto out;
 
-	/* For directories it's -EISDIR, for other non-regulars - -EINVAL */
-	if (S_ISDIR(inode->i_mode))
-		return -EISDIR;
-	if (!S_ISREG(inode->i_mode))
-		return -EINVAL;
-
-	error = mnt_want_write(path->mnt);
+	error = user_path(pathname, &path);
 	if (error)
 		goto out;
+	inode = path.dentry->d_inode;
+
+	/* For directories it's -EISDIR, for other non-regulars - -EINVAL */
+	error = -EISDIR;
+	if (S_ISDIR(inode->i_mode))
+		goto dput_and_out;
+
+	error = -EINVAL;
+	if (!S_ISREG(inode->i_mode))
+		goto dput_and_out;
+
+	error = mnt_want_write(path.mnt);
+	if (error)
+		goto dput_and_out;
 
 	error = inode_permission(inode, MAY_WRITE);
 	if (error)
@@ -100,32 +111,17 @@ long vfs_truncate(struct path *path, loff_t length)
 
 	error = locks_verify_truncate(inode, NULL, length);
 	if (!error)
-		error = security_path_truncate(path);
+		error = security_path_truncate(&path);
 	if (!error)
-		error = do_truncate(path->dentry, length, 0, NULL);
+		error = do_truncate(path.dentry, length, 0, NULL);
 
 put_write_and_out:
 	put_write_access(inode);
 mnt_drop_write_and_out:
-	mnt_drop_write(path->mnt);
+	mnt_drop_write(path.mnt);
+dput_and_out:
+	path_put(&path);
 out:
-	return error;
-}
-EXPORT_SYMBOL_GPL(vfs_truncate);
-
-static long do_sys_truncate(const char __user *pathname, loff_t length)
-{
-	struct path path;
-	int error;
-
-	if (length < 0)	/* sorry, but loff_t says... */
-		return -EINVAL;
-
-	error = user_path(pathname, &path);
-	if (!error) {
-		error = vfs_truncate(&path, length);
-		path_put(&path);
-	}
 	return error;
 }
 
@@ -676,7 +672,6 @@ static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,
 	f->f_path.dentry = dentry;
 	f->f_path.mnt = mnt;
 	f->f_pos = 0;
-	file_sb_list_add(f, inode->i_sb);
 
 	if (unlikely(f->f_mode & FMODE_PATH)) {
 		f->f_op = &empty_fops;
@@ -734,7 +729,6 @@ cleanup_all:
 			mnt_drop_write(mnt);
 		}
 	}
-	file_sb_list_del(f);
 	f->f_path.dentry = NULL;
 	f->f_path.mnt = NULL;
 cleanup_file:
@@ -836,6 +830,50 @@ struct file *dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags,
 	return __dentry_open(dentry, mnt, f, NULL, cred);
 }
 EXPORT_SYMBOL(dentry_open);
+
+static void __put_unused_fd(struct files_struct *files, unsigned int fd)
+{
+	struct fdtable *fdt = files_fdtable(files);
+	__clear_open_fd(fd, fdt);
+	if (fd < files->next_fd)
+		files->next_fd = fd;
+}
+
+void put_unused_fd(unsigned int fd)
+{
+	struct files_struct *files = current->files;
+	spin_lock(&files->file_lock);
+	__put_unused_fd(files, fd);
+	spin_unlock(&files->file_lock);
+}
+
+EXPORT_SYMBOL(put_unused_fd);
+
+/*
+ * Install a file pointer in the fd array.
+ *
+ * The VFS is full of places where we drop the files lock between
+ * setting the open_fds bitmap and installing the file in the file
+ * array.  At any such point, we are vulnerable to a dup2() race
+ * installing a file in the array before us.  We need to detect this and
+ * fput() the struct file we are about to overwrite in this case.
+ *
+ * It should never happen - if we allow dup2() do it, _really_ bad things
+ * will follow.
+ */
+
+void fd_install(unsigned int fd, struct file *file)
+{
+	struct files_struct *files = current->files;
+	struct fdtable *fdt;
+	spin_lock(&files->file_lock);
+	fdt = files_fdtable(files);
+	BUG_ON(fdt->fd[fd] != NULL);
+	rcu_assign_pointer(fdt->fd[fd], file);
+	spin_unlock(&files->file_lock);
+}
+
+EXPORT_SYMBOL(fd_install);
 
 static inline int build_open_flags(int flags, umode_t mode, struct open_flags *op)
 {
@@ -1029,7 +1067,23 @@ EXPORT_SYMBOL(filp_close);
  */
 SYSCALL_DEFINE1(close, unsigned int, fd)
 {
-	int retval = __close_fd(current->files, fd);
+	struct file * filp;
+	struct files_struct *files = current->files;
+	struct fdtable *fdt;
+	int retval;
+
+	spin_lock(&files->file_lock);
+	fdt = files_fdtable(files);
+	if (fd >= fdt->max_fds)
+		goto out_unlock;
+	filp = fdt->fd[fd];
+	if (!filp)
+		goto out_unlock;
+	rcu_assign_pointer(fdt->fd[fd], NULL);
+	__clear_close_on_exec(fd, fdt);
+	__put_unused_fd(files, fd);
+	spin_unlock(&files->file_lock);
+	retval = filp_close(filp, files);
 
 	/* can't restart close syscall because file table entry was cleared */
 	if (unlikely(retval == -ERESTARTSYS ||
@@ -1039,6 +1093,10 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 		retval = -EINTR;
 
 	return retval;
+
+out_unlock:
+	spin_unlock(&files->file_lock);
+	return -EBADF;
 }
 EXPORT_SYMBOL(sys_close);
 

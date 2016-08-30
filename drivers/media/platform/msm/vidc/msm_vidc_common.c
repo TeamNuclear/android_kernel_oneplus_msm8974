@@ -38,6 +38,14 @@
 	(__height / 16) * (__width  / 16) * __fps; \
 })
 
+#define VIDC_BUS_LOAD(__height, __width, __fps, __br) ({\
+	__height * __width * __fps; \
+})
+
+#define GET_NUM_MBS(__h, __w) ({\
+	u32 __mbs = (__h >> 4) * (__w >> 4);\
+	__mbs;\
+})
 static void msm_comm_generate_session_error(struct msm_vidc_inst *inst);
 static void msm_comm_generate_sys_error(struct msm_vidc_inst *inst);
 static void handle_session_error(enum command_response cmd, void *data);
@@ -132,8 +140,13 @@ static int msm_comm_get_inst_load(struct msm_vidc_inst *inst,
 	}
 
 	if (is_non_realtime_session(inst) &&
-		(quirks & LOAD_CALC_IGNORE_NON_REALTIME_LOAD))
-		load = msm_comm_get_mbs_per_sec(inst) / inst->prop.fps;
+		(quirks & LOAD_CALC_IGNORE_NON_REALTIME_LOAD)) {
+		if (!inst->prop.fps) {
+			dprintk(VIDC_INFO, "%s: instance:%p prop->fps is set 0\n", __func__, inst);
+			load = 0;
+		} else
+			load = msm_comm_get_mbs_per_sec(inst) / inst->prop.fps;
+	}
 
         return load;
 }
@@ -992,7 +1005,6 @@ static void handle_session_close(enum command_response cmd, void *data)
 			dprintk(VIDC_ERR, "%s invalid params\n", __func__);
 			return;
 		}
-		msm_comm_session_clean(inst);
 		signal_session_msg_receipt(cmd, inst);
 		show_stats(inst);
 	} else {
@@ -2182,10 +2194,10 @@ static int set_output_buffers(struct msm_vidc_inst *inst,
 				buffer_info.extradata_size =
 					extradata_buf->buffer_size;
 			}
-			dprintk(VIDC_DBG, "Output buffer address: 0x%pa\n",
-					&buffer_info.align_device_addr);
-			dprintk(VIDC_DBG, "Output extradata address: 0x%pa\n",
-					&buffer_info.extradata_addr);
+			dprintk(VIDC_DBG, "Output buffer address: %x",
+					buffer_info.align_device_addr);
+			dprintk(VIDC_DBG, "Output extradata address: %x",
+					buffer_info.extradata_addr);
 			rc = call_hfi_op(hdev, session_set_buffers,
 					(void *) inst->session, &buffer_info);
 			mutex_unlock(&inst->lock);
